@@ -2,7 +2,9 @@
 
 use core::fmt;
 
+use crate::component::PortId;
 use crate::event::Phase;
+use crate::protocol::ProtocolId;
 use crate::time::{ClockDomainId, Tick, TimeError};
 
 /// A fatal simulation error. The run stops and reports it with its diagnostic.
@@ -43,6 +45,19 @@ pub enum SimError {
     SequenceOverflow,
     /// A clock domain id did not name a domain in this session.
     UnknownClockDomain(ClockDomainId),
+    /// A component used a port id it does not declare.
+    UnknownPort(PortId),
+    /// A message's protocol differs from the protocol of the port it was sent on.
+    ProtocolMismatch {
+        /// The sending port.
+        port: PortId,
+        /// The port's protocol.
+        expected: ProtocolId,
+        /// The message's protocol.
+        actual: ProtocolId,
+    },
+    /// A component reported a fault in its own logic.
+    ComponentFault(&'static str),
 }
 
 impl From<TimeError> for SimError {
@@ -73,6 +88,17 @@ impl fmt::Display for SimError {
             }
             SimError::SequenceOverflow => f.write_str("S6: event sequence counter exhausted"),
             SimError::UnknownClockDomain(id) => write!(f, "unknown clock domain {}", id.0),
+            SimError::UnknownPort(port) => write!(f, "unknown port {}", port.0),
+            SimError::ProtocolMismatch {
+                port,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "port {} speaks {}.v{} but the message is {}.v{}",
+                port.0, expected.name, expected.version, actual.name, actual.version
+            ),
+            SimError::ComponentFault(what) => write!(f, "component fault: {what}"),
         }
     }
 }

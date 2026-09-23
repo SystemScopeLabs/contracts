@@ -3,8 +3,7 @@
 use core::cmp::Ordering;
 use core::fmt;
 
-use crate::error::SimError;
-use crate::time::{ClockDomain, ClockDomainId, Duration, SimulationClock, Tick};
+use crate::time::{ClockDomainId, Duration, Tick};
 
 /// The fixed, runtime-defined order of work within a single tick.
 ///
@@ -78,13 +77,15 @@ impl PartialOrd for EventKey {
     }
 }
 
-/// When a scheduled event should run, relative to the current time.
+/// When a component wants an event to run, relative to the current time.
+///
+/// There is deliberately no tick variant: components never handle ticks, so their
+/// behavior does not change with the session resolution. Only the runtime resolves this
+/// to an absolute [`Tick`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum When {
-    /// At the current tick.
+pub enum ScheduleWhen {
+    /// At the current tick (tick 0 during `init`).
     Now,
-    /// A number of ticks from now.
-    Ticks(u64),
     /// A physical duration from now, rounded up to whole ticks.
     After(Duration),
     /// `k` cycles after the first edge of `domain` at or after now.
@@ -96,32 +97,9 @@ pub enum When {
     },
 }
 
-impl When {
-    /// Resolves this request to an absolute tick.
-    ///
-    /// `domain` looks up clock domains by id and returns `None` for unknown ids.
-    pub fn resolve<'a>(
-        self,
-        now: Tick,
-        clock: &SimulationClock,
-        domain: impl FnOnce(ClockDomainId) -> Option<&'a ClockDomain>,
-    ) -> Result<Tick, SimError> {
-        let tick = match self {
-            When::Now => now,
-            When::Ticks(n) => now.checked_add(n)?,
-            When::After(d) => clock.after(now, d)?,
-            When::Cycles { domain: id, k } => domain(id)
-                .ok_or(SimError::UnknownClockDomain(id))?
-                .cycles_after(now, k)?,
-        };
-        Ok(tick)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::{Frequency, Rounding};
 
     fn key(tick: u64, phase: Phase, sequence: u64) -> EventKey {
         EventKey {
@@ -153,45 +131,5 @@ mod tests {
             key(5, Phase::Commit, 1).cmp(&key(5, Phase::Commit, 1)),
             Ordering::Equal
         );
-    }
-
-    #[test]
-    fn when_resolves_each_variant() {
-        let clock = SimulationClock::default();
-        let cpu = ClockDomain::new(
-            &clock,
-            ClockDomainId(7),
-            Frequency::from_hz(3_000_000_000).unwrap(),
-            Tick::ZERO,
-            Rounding::Floor,
-        )
-        .unwrap();
-        let lookup = |id: ClockDomainId| (id == cpu.id()).then_some(&cpu);
-        let now = Tick(400);
-
-        assert_eq!(When::Now.resolve(now, &clock, lookup), Ok(Tick(400)));
-        assert_eq!(When::Ticks(10).resolve(now, &clock, lookup), Ok(Tick(410)));
-        assert_eq!(
-            When::After(Duration::from_ns(1)).resolve(now, &clock, lookup),
-            Ok(Tick(1_400))
-        );
-        let cycles = When::Cycles {
-            domain: ClockDomainId(7),
-            k: 1,
-        };
-        assert_eq!(cycles.resolve(now, &clock, lookup), Ok(Tick(1_000)));
-
-        let unknown = When::Cycles {
-            domain: ClockDomainId(8),
-            k: 1,
-        };
-        assert_eq!(
-            unknown.resolve(now, &clock, lookup),
-            Err(SimError::UnknownClockDomain(ClockDomainId(8)))
-        );
-        assert!(matches!(
-            When::Ticks(u64::MAX).resolve(now, &clock, lookup),
-            Err(SimError::Time(_))
-        ));
     }
 }
