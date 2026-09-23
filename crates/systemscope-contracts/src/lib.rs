@@ -6,5 +6,6 @@ pub mod component;
 pub mod error;
 pub mod event;
 pub mod protocol;
+pub mod rng;
 pub mod time;
 pub mod topology;

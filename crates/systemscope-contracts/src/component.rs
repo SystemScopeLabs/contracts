@@ -6,6 +6,7 @@
 use crate::error::SimError;
 use crate::event::{Phase, ScheduleWhen};
 use crate::protocol::{Message, ProtocolId};
+use crate::rng::SimRng;
 use crate::time::Tick;
 
 /// Identifies a component within a session. Assigned in topology declaration order.
@@ -77,6 +78,9 @@ pub trait InitContext {
 
     /// Schedules a [`Delivered::Wake`] with `token` for this component.
     fn wake_self(&mut self, when: ScheduleWhen, phase: Phase, token: u64) -> Result<(), SimError>;
+
+    /// This component's random stream, owned and snapshotted by the runtime.
+    fn rng(&mut self) -> &mut dyn SimRng;
 }
 
 /// What a component may do while handling an event.
