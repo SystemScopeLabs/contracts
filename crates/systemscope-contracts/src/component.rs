@@ -8,6 +8,7 @@ use crate::event::{Phase, ScheduleWhen};
 use crate::protocol::{Message, ProtocolId};
 use crate::rng::SimRng;
 use crate::time::Tick;
+use crate::trace::Value;
 
 /// Identifies a component within a session. Assigned in topology declaration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -81,6 +82,10 @@ pub trait InitContext {
 
     /// This component's random stream, owned and snapshotted by the runtime.
     fn rng(&mut self) -> &mut dyn SimRng;
+
+    /// Records a trace entry. Write-only: there is no way to learn whether tracing is on,
+    /// and when it is off the record is simply dropped.
+    fn trace(&mut self, kind: &'static str, fields: Vec<(&'static str, Value)>);
 }
 
 /// What a component may do while handling an event.
