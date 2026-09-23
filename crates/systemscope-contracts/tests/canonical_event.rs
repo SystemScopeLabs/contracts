@@ -188,7 +188,8 @@ fn meaningless_tags_are_rejected() {
 fn unknown_protocols_and_bad_strings_are_rejected() {
     // Protocol name "mem" is at 32..35; its version at 35..37.
     assert_eq!(patched(34, b'x'), Err(DecodeError::UnknownProtocol));
-    assert_eq!(patched(35, 1), Err(DecodeError::UnknownProtocol));
+    // Version 1 is mem.v1, so the first unknown version is 2.
+    assert_eq!(patched(35, 2), Err(DecodeError::UnknownProtocol));
     assert_eq!(patched(32, 0xFF), Err(DecodeError::InvalidUtf8));
 }
 

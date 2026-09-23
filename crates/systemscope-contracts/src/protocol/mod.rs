@@ -4,6 +4,7 @@
 //! runtime can check and canonically encode any message without dynamic typing.
 
 pub mod mem;
+pub mod mem_v1;
 
 /// Names a protocol and its version. Linked ports must agree on both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,6 +20,8 @@ pub struct ProtocolId {
 pub enum Message {
     /// A `mem.v0` message.
     Mem(mem::MemMsg),
+    /// A `mem.v1` message.
+    MemV1(mem_v1::MemMsg),
 }
 
 impl Message {
@@ -26,6 +29,7 @@ impl Message {
     pub fn protocol(&self) -> ProtocolId {
         match self {
             Message::Mem(_) => mem::PROTOCOL,
+            Message::MemV1(_) => mem_v1::PROTOCOL,
         }
     }
 }
@@ -33,5 +37,11 @@ impl Message {
 impl From<mem::MemMsg> for Message {
     fn from(msg: mem::MemMsg) -> Message {
         Message::Mem(msg)
+    }
+}
+
+impl From<mem_v1::MemMsg> for Message {
+    fn from(msg: mem_v1::MemMsg) -> Message {
+        Message::MemV1(msg)
     }
 }

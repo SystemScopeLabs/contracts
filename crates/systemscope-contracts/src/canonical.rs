@@ -10,6 +10,7 @@ use crate::component::{ComponentId, Delivered, PortId};
 use crate::event::{EventKey, Phase};
 use crate::protocol::Message;
 use crate::protocol::mem::{self, MemMsg, TxnId};
+use crate::protocol::mem_v1::{self, MemFault, ReadOutcome, WriteOutcome};
 use crate::time::Tick;
 
 /// Appends canonical encodings to a byte buffer.
@@ -322,6 +323,129 @@ impl MemMsg {
     }
 }
 
+impl mem_v1::MemMsg {
+    /// Writes the variant tag in declaration order, then the fields; nested outcomes and
+    /// faults are enums under the same rule.
+    pub fn encode(&self, e: &mut Encoder) {
+        match self {
+            mem_v1::MemMsg::ReadReq { txn, addr, len } => {
+                e.u8(0);
+                e.u64(txn.0);
+                e.u64(*addr);
+                e.u32(*len);
+            }
+            mem_v1::MemMsg::ReadResp { txn, outcome } => {
+                e.u8(1);
+                e.u64(txn.0);
+                match outcome {
+                    ReadOutcome::Data { data } => {
+                        e.u8(0);
+                        e.bytes(data);
+                    }
+                    ReadOutcome::Fault { fault } => {
+                        e.u8(1);
+                        fault.encode(e);
+                    }
+                }
+            }
+            mem_v1::MemMsg::WriteReq { txn, addr, data } => {
+                e.u8(2);
+                e.u64(txn.0);
+                e.u64(*addr);
+                e.bytes(data);
+            }
+            mem_v1::MemMsg::WriteResp { txn, outcome } => {
+                e.u8(3);
+                e.u64(txn.0);
+                match outcome {
+                    WriteOutcome::Done => e.u8(0),
+                    WriteOutcome::Fault { fault } => {
+                        e.u8(1);
+                        fault.encode(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads what [`mem_v1::MemMsg::encode`] writes. It checks the bytes only: a
+    /// zero-length request decodes, and a read's data length cannot be checked without
+    /// its request (see [`mem_v1`]).
+    pub fn decode(d: &mut Decoder<'_>) -> Result<mem_v1::MemMsg, DecodeError> {
+        let msg = match d.u8()? {
+            0 => mem_v1::MemMsg::ReadReq {
+                txn: TxnId(d.u64()?),
+                addr: d.u64()?,
+                len: d.u32()?,
+            },
+            1 => mem_v1::MemMsg::ReadResp {
+                txn: TxnId(d.u64()?),
+                outcome: match d.u8()? {
+                    0 => ReadOutcome::Data {
+                        data: d.bytes()?.to_vec(),
+                    },
+                    1 => ReadOutcome::Fault {
+                        fault: MemFault::decode(d)?,
+                    },
+                    tag => {
+                        return Err(DecodeError::InvalidTag {
+                            what: "mem.v1 read outcome",
+                            tag,
+                        });
+                    }
+                },
+            },
+            2 => mem_v1::MemMsg::WriteReq {
+                txn: TxnId(d.u64()?),
+                addr: d.u64()?,
+                data: d.bytes()?.to_vec(),
+            },
+            3 => mem_v1::MemMsg::WriteResp {
+                txn: TxnId(d.u64()?),
+                outcome: match d.u8()? {
+                    0 => WriteOutcome::Done,
+                    1 => WriteOutcome::Fault {
+                        fault: MemFault::decode(d)?,
+                    },
+                    tag => {
+                        return Err(DecodeError::InvalidTag {
+                            what: "mem.v1 write outcome",
+                            tag,
+                        });
+                    }
+                },
+            },
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "mem.v1",
+                    tag,
+                });
+            }
+        };
+        Ok(msg)
+    }
+}
+
+impl MemFault {
+    /// Writes the variant tag in declaration order.
+    pub fn encode(&self, e: &mut Encoder) {
+        match self {
+            MemFault::AccessFault => e.u8(0),
+        }
+    }
+
+    /// Reads what [`MemFault::encode`] writes.
+    pub fn decode(d: &mut Decoder<'_>) -> Result<MemFault, DecodeError> {
+        match d.u8()? {
+            0 => Ok(MemFault::AccessFault),
+            tag => Err(DecodeError::InvalidTag {
+                what: "mem.v1 fault",
+                tag,
+            }),
+        }
+    }
+}
+
 impl Message {
     /// Writes `protocol name · protocol version u16 · payload`.
     pub fn encode(&self, e: &mut Encoder) {
@@ -330,6 +454,7 @@ impl Message {
         e.u16(protocol.version);
         match self {
             Message::Mem(msg) => msg.encode(e),
+            Message::MemV1(msg) => msg.encode(e),
         }
     }
 
@@ -337,10 +462,14 @@ impl Message {
     pub fn decode(d: &mut Decoder<'_>) -> Result<Message, DecodeError> {
         let name = d.str()?;
         let version = d.u16()?;
-        if name == mem::PROTOCOL.name && version == mem::PROTOCOL.version {
-            MemMsg::decode(d).map(Message::Mem)
-        } else {
-            Err(DecodeError::UnknownProtocol)
+        match (name, version) {
+            (n, v) if n == mem::PROTOCOL.name && v == mem::PROTOCOL.version => {
+                MemMsg::decode(d).map(Message::Mem)
+            }
+            (n, v) if n == mem_v1::PROTOCOL.name && v == mem_v1::PROTOCOL.version => {
+                mem_v1::MemMsg::decode(d).map(Message::MemV1)
+            }
+            _ => Err(DecodeError::UnknownProtocol),
         }
     }
 }
