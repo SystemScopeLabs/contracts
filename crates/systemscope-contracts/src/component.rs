@@ -7,6 +7,7 @@ use crate::error::SimError;
 use crate::event::{Phase, ScheduleWhen};
 use crate::protocol::{Message, ProtocolId};
 use crate::rng::SimRng;
+use crate::snapshot::{RestoreError, SnapshotReader, SnapshotWriter};
 use crate::time::Tick;
 use crate::trace::Value;
 
@@ -110,4 +111,19 @@ pub trait Component {
 
     /// Handles one delivered event.
     fn handle_event(&mut self, ev: &Delivered, ctx: &mut dyn SimContext) -> Result<(), SimError>;
+
+    /// The layout version of [`Component::snapshot`]. Restore requires an exact match.
+    fn snapshot_schema_version(&self) -> u32;
+
+    /// Writes every piece of state that affects future behavior, canonically.
+    fn snapshot(&self, w: &mut SnapshotWriter);
+
+    /// Replaces this component's state with a snapshot written by the same schema. Called
+    /// on a freshly elaborated component instead of `init`. The runtime rejects bytes left
+    /// unread.
+    fn restore(
+        &mut self,
+        r: &mut SnapshotReader<'_>,
+        schema_version: u32,
+    ) -> Result<(), RestoreError>;
 }

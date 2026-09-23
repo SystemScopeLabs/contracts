@@ -8,6 +8,7 @@ pub mod error;
 pub mod event;
 pub mod protocol;
 pub mod rng;
+pub mod snapshot;
 pub mod time;
 pub mod topology;
 pub mod trace;
