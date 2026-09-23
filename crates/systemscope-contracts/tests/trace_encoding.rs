@@ -88,6 +88,7 @@ fn header() -> TraceHeader {
         ticks_per_second: 1000,
         seed: 5,
         contracts_version: "v".into(),
+        topology_hash: core::array::from_fn(|i| i as u8),
         clock_domains: vec![domain],
         components: vec![ComponentDecl {
             path: "c".into(),
@@ -124,6 +125,10 @@ const HEADER: &[u8] = &[
     0xE8, 0x03, 0, 0, 0, 0, 0, 0,          // ticks_per_second = 1000
     0x05, 0, 0, 0, 0, 0, 0, 0,             // seed
     0x01, 0, 0, 0, b'v',                   // contracts_version
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // topology_hash, 32 raw bytes
+    0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
     0x01, 0, 0, 0,                         // 1 clock domain
     0, 0, 0, 0,                            //   id
     0x0A, 0, 0, 0, 0, 0, 0, 0,             //   freq num
@@ -150,7 +155,7 @@ const HEADER: &[u8] = &[
 
 fn golden_stream(records: &[&[u8]]) -> Vec<u8> {
     let mut out = b"SSTRACE\0".to_vec();
-    out.extend_from_slice(&[0x01, 0, 0, 0]); // format_version 1
+    out.extend_from_slice(&[0x02, 0, 0, 0]); // format_version 2
     out.extend_from_slice(HEADER);
     for r in records {
         out.push(0x01); // record marker
@@ -162,8 +167,8 @@ fn golden_stream(records: &[&[u8]]) -> Vec<u8> {
 }
 
 #[test]
-fn format_version_is_one() {
-    assert_eq!(TRACE_FORMAT_VERSION, 1);
+fn format_version_is_two() {
+    assert_eq!(TRACE_FORMAT_VERSION, 2);
 }
 
 #[test]
@@ -262,6 +267,7 @@ fn skip_header(r: &mut Reader) {
     r.u64();
     r.u64();
     r.string();
+    r.take(32);
     for _ in 0..r.u32() {
         r.take(4 + 8 + 8 + 8 + 1);
     }
@@ -293,7 +299,7 @@ fn skip_header(r: &mut Reader) {
 fn decode(stream: &[u8]) -> Vec<Rec> {
     let mut r = Reader(stream);
     assert_eq!(r.take(8), b"SSTRACE\0");
-    assert_eq!(r.u32(), 1);
+    assert_eq!(r.u32(), 2);
     skip_header(&mut r);
     let mut out = Vec::new();
     loop {

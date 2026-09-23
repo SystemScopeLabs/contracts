@@ -14,7 +14,7 @@ pub const TRACE_MAGIC: [u8; 8] = *b"SSTRACE\0";
 
 /// Version of the trace stream layout. Any change to the layout, header, record
 /// encoding, value tags, or `runtime.dispatch` fields must bump it.
-pub const TRACE_FORMAT_VERSION: u32 = 1;
+pub const TRACE_FORMAT_VERSION: u32 = 2;
 
 /// Version of this contracts crate, recorded in every trace header.
 pub const CONTRACTS_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -158,6 +158,8 @@ pub struct TraceHeader {
     pub seed: u64,
     /// Version of the contracts the session ran with.
     pub contracts_version: String,
+    /// BLAKE3 of [`encode_topology`] over `components` and `links`.
+    pub topology_hash: [u8; 32],
     /// Clock domains, in id order.
     pub clock_domains: Vec<ClockDomain>,
     /// Components, in `ComponentId` order.
@@ -172,49 +174,62 @@ impl TraceHeader {
         e.u64(self.ticks_per_second);
         e.u64(self.seed);
         e.str(&self.contracts_version);
-        e.len(self.clock_domains.len());
-        for d in &self.clock_domains {
-            e.u32(d.id().0);
-            e.u64(d.frequency().num());
-            e.u64(d.frequency().den());
-            e.u64(d.offset().0);
-            e.u8(match d.edge_rounding() {
-                Rounding::Floor => 0,
-                Rounding::Ceil => 1,
+        e.raw(&self.topology_hash);
+        encode_clock_domains(e, &self.clock_domains);
+        encode_topology(e, &self.components, &self.links);
+    }
+}
+
+/// Writes clock domains as a sequence of
+/// `id u32 · freq num u64 · freq den u64 · offset u64 · rounding u8`.
+pub fn encode_clock_domains(e: &mut Encoder, domains: &[ClockDomain]) {
+    e.len(domains.len());
+    for d in domains {
+        e.u32(d.id().0);
+        e.u64(d.frequency().num());
+        e.u64(d.frequency().den());
+        e.u64(d.offset().0);
+        e.u8(match d.edge_rounding() {
+            Rounding::Floor => 0,
+            Rounding::Ceil => 1,
+        });
+    }
+}
+
+/// Writes the structural topology: the component sequence, then the link sequence. The
+/// `topology_hash` is BLAKE3 of exactly these bytes (§6).
+pub fn encode_topology(e: &mut Encoder, components: &[ComponentDecl], links: &[LinkDecl]) {
+    e.len(components.len());
+    for c in components {
+        e.str(&c.path);
+        e.str(c.type_name);
+        e.len(c.ports.len());
+        for p in &c.ports {
+            e.str(p.name);
+            e.str(p.protocol.name);
+            e.u16(p.protocol.version);
+            e.u8(match p.role {
+                Role::Initiator => 0,
+                Role::Target => 1,
             });
         }
-        e.len(self.components.len());
-        for c in &self.components {
-            e.str(&c.path);
-            e.str(c.type_name);
-            e.len(c.ports.len());
-            for p in &c.ports {
-                e.str(p.name);
-                e.str(p.protocol.name);
-                e.u16(p.protocol.version);
-                e.u8(match p.role {
-                    Role::Initiator => 0,
-                    Role::Target => 1,
-                });
-            }
+    }
+    e.len(links.len());
+    for l in links {
+        for (component, port) in [l.a, l.b] {
+            e.u32(component.0);
+            e.u16(port.0);
         }
-        e.len(self.links.len());
-        for l in &self.links {
-            for (component, port) in [l.a, l.b] {
-                e.u32(component.0);
-                e.u16(port.0);
+        match l.latency {
+            None => e.u8(0),
+            Some(LinkLatency::After(d)) => {
+                e.u8(1);
+                e.u128(d.as_femtoseconds());
             }
-            match l.latency {
-                None => e.u8(0),
-                Some(LinkLatency::After(d)) => {
-                    e.u8(1);
-                    e.u128(d.as_femtoseconds());
-                }
-                Some(LinkLatency::Cycles { domain, k }) => {
-                    e.u8(2);
-                    e.u32(domain.0);
-                    e.u64(k);
-                }
+            Some(LinkLatency::Cycles { domain, k }) => {
+                e.u8(2);
+                e.u32(domain.0);
+                e.u64(k);
             }
         }
     }
