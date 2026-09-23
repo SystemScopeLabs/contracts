@@ -15,6 +15,9 @@ pub trait SimRng {
     ///
     /// Rejection sampling: with `t = n.wrapping_neg() % n`, draw `x` until `x >= t`, then
     /// return `x % n`. This is part of the contract; implementations must not override it.
+    ///
+    /// Edge cases follow from the formula: `n = 0` cannot be expressed; `n = 1` returns 0
+    /// and consumes exactly one draw; `n = u64::MAX` rejects only the draw `0`.
     fn below(&mut self, n: NonZeroU64) -> u64 {
         let n = n.get();
         let threshold = n.wrapping_neg() % n;
@@ -27,6 +30,9 @@ pub trait SimRng {
     }
 
     /// Returns `true` with probability `num / den` (always `true` when `num >= den`).
+    ///
+    /// Always consumes exactly the draws of `below(den)`, even when the result is certain
+    /// (`num == 0` or `num >= den`). Short-circuiting would shift every later draw.
     fn chance(&mut self, num: u64, den: NonZeroU64) -> bool {
         self.below(den) < num
     }
@@ -65,6 +71,34 @@ mod tests {
         let mut rng = Script(vec![u64::MAX, 5]);
         assert_eq!(rng.below(nz(8)), 7);
         assert_eq!(rng.below(nz(1)), 0);
+        assert!(rng.0.is_empty());
+    }
+
+    #[test]
+    fn below_one_is_zero_and_consumes_one_draw() {
+        for x in [0, 1, u64::MAX] {
+            let mut rng = Script(vec![x, 99]);
+            assert_eq!(rng.below(nz(1)), 0);
+            assert_eq!(rng.0, [99]);
+        }
+    }
+
+    #[test]
+    fn below_max_rejects_only_zero() {
+        assert_eq!(u64::MAX.wrapping_neg() % u64::MAX, 1);
+        let mut rng = Script(vec![0, 0, 1, u64::MAX - 1, u64::MAX]);
+        assert_eq!(rng.below(nz(u64::MAX)), 1);
+        assert_eq!(rng.below(nz(u64::MAX)), u64::MAX - 1);
+        assert_eq!(rng.below(nz(u64::MAX)), 0);
+        assert!(rng.0.is_empty());
+    }
+
+    #[test]
+    fn certain_chances_still_consume_draws() {
+        let mut rng = Script(vec![12, 13, 14]);
+        assert!(!rng.chance(0, nz(10)));
+        assert!(rng.chance(10, nz(10)));
+        assert!(rng.chance(u64::MAX, nz(10)));
         assert!(rng.0.is_empty());
     }
 
