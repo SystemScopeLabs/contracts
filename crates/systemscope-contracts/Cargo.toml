@@ -1,0 +1,9 @@
+[package]
+name = "systemscope-contracts"
+description = "Language-level contracts for the SystemScope simulation platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
