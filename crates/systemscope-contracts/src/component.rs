@@ -5,6 +5,7 @@
 
 use crate::error::SimError;
 use crate::event::{Phase, ScheduleWhen};
+use crate::observe::StateView;
 use crate::protocol::{Message, ProtocolId};
 use crate::rng::SimRng;
 use crate::snapshot::{RestoreError, SnapshotReader, SnapshotWriter};
@@ -126,4 +127,10 @@ pub trait Component {
         r: &mut SnapshotReader<'_>,
         schema_version: u32,
     ) -> Result<(), RestoreError>;
+
+    /// A read-only view of the component's state for observers and inspectors. Must not
+    /// change the component; the default shows nothing.
+    fn inspect(&self) -> StateView {
+        StateView::default()
+    }
 }

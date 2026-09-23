@@ -6,6 +6,7 @@ pub mod canonical;
 pub mod component;
 pub mod error;
 pub mod event;
+pub mod observe;
 pub mod protocol;
 pub mod rng;
 pub mod snapshot;
