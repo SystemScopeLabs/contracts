@@ -16,8 +16,10 @@ pub const TRACE_MAGIC: [u8; 8] = *b"SSTRACE\0";
 /// encoding, value tags, or `runtime.dispatch` fields must bump it.
 pub const TRACE_FORMAT_VERSION: u32 = 2;
 
-/// Version of this contracts crate, recorded in every trace header.
-pub const CONTRACTS_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The value of the `contracts_version` field in trace headers and snapshots: the
+/// [`COMPATIBILITY_ID`](crate::COMPATIBILITY_ID), under the name of that field. It is not
+/// the crate's Cargo version.
+pub const CONTRACTS_VERSION: &str = crate::COMPATIBILITY_ID;
 
 /// Kind of the record the runtime emits for every dispatched event.
 pub const DISPATCH_KIND: &str = "runtime.dispatch";

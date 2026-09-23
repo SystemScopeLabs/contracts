@@ -6,6 +6,7 @@
 //! encoded sequence decodes back to itself, no two sequences share an encoding.
 
 use proptest::prelude::*;
+use systemscope_contracts::COMPATIBILITY_ID;
 use systemscope_contracts::component::{ComponentId, PortId, PortSpec, Role};
 use systemscope_contracts::event::{EventKey, Phase};
 use systemscope_contracts::protocol::ProtocolId;
@@ -14,8 +15,8 @@ use systemscope_contracts::time::{
 };
 use systemscope_contracts::topology::LinkLatency;
 use systemscope_contracts::trace::{
-    ComponentDecl, LinkDecl, TRACE_FORMAT_VERSION, TraceAt, TraceHeader, TraceOrigin, TraceRecord,
-    Value, encode_stream,
+    CONTRACTS_VERSION, ComponentDecl, LinkDecl, TRACE_FORMAT_VERSION, TraceAt, TraceHeader,
+    TraceOrigin, TraceRecord, Value, encode_stream,
 };
 
 fn record_a() -> TraceRecord {
@@ -169,6 +170,15 @@ fn golden_stream(records: &[&[u8]]) -> Vec<u8> {
 #[test]
 fn format_version_is_two() {
     assert_eq!(TRACE_FORMAT_VERSION, 2);
+}
+
+/// The compatibility id is serialized into every snapshot and trace, so it is pinned here.
+/// Changing it re-blesses every golden file (`docs/m1-design.md` §4.5). It is a constant,
+/// not the crate's Cargo version, which may change without touching any digest.
+#[test]
+fn compatibility_id_is_pinned_and_is_what_headers_record() {
+    assert_eq!(COMPATIBILITY_ID, "0.0.0");
+    assert_eq!(CONTRACTS_VERSION, COMPATIBILITY_ID);
 }
 
 #[test]
