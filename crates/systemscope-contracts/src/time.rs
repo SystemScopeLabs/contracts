@@ -18,10 +18,9 @@ pub enum TimeError {
     ZeroResolution,
     /// A frequency numerator or denominator was zero.
     ZeroFrequency,
-    /// The clock period is shorter than one tick at the session resolution.
+    /// Adjacent edges of a clock cannot be distinguished at the session resolution,
+    /// because its period is shorter than one tick.
     FrequencyAboveResolution,
-    /// The clock period in ticks cannot be expressed as a ratio of two `u64` values.
-    UnrepresentablePeriod,
 }
 
 impl fmt::Display for TimeError {
@@ -31,9 +30,8 @@ impl fmt::Display for TimeError {
             TimeError::ZeroResolution => "ticks_per_second must be non-zero",
             TimeError::ZeroFrequency => "frequency numerator and denominator must be non-zero",
             TimeError::FrequencyAboveResolution => {
-                "clock period is shorter than one tick at this resolution"
+                "adjacent clock edges cannot be distinguished at this tick resolution"
             }
-            TimeError::UnrepresentablePeriod => "clock period is not representable in u64 ratio",
         };
         f.write_str(msg)
     }
@@ -151,12 +149,17 @@ impl SimulationClock {
     pub fn ticks_for(&self, duration: Duration) -> Result<u64, TimeError> {
         let tps = u128::from(self.ticks_per_second);
         let fs = duration.as_femtoseconds();
-        // fs * tps / 10^15, split so every intermediate fits in u128.
-        let whole = (fs / FS_PER_SECOND)
+        // ceil(fs × tps / 10^15) = (fs / 10^15) × tps + ceil((fs % 10^15) × tps / 10^15).
+        // The second product is below 10^15 × 2^64 and cannot overflow; the first can, and
+        // then the result would not fit in a tick anyway.
+        let whole = (fs / FS_PER_SECOND).checked_mul(tps);
+        let frac = (fs % FS_PER_SECOND)
             .checked_mul(tps)
+            .map(|x| x.div_ceil(FS_PER_SECOND));
+        let ticks = whole
+            .zip(frac)
+            .and_then(|(w, f)| w.checked_add(f))
             .ok_or(TimeError::TimeOverflow)?;
-        let frac = ((fs % FS_PER_SECOND) * tps).div_ceil(FS_PER_SECOND);
-        let ticks = whole.checked_add(frac).ok_or(TimeError::TimeOverflow)?;
         u64::try_from(ticks).map_err(|_| TimeError::TimeOverflow)
     }
 
@@ -232,15 +235,18 @@ pub struct ClockDomain {
     offset: Tick,
     edge_rounding: Rounding,
     /// Period in ticks as the reduced fraction `period_num / period_den`.
-    period_num: u64,
+    ///
+    /// `period_num = ticks_per_second × den / g` can need up to 128 bits.
+    /// `period_den = num / g` always fits in 64 bits because `g ≥ 1`.
+    period_num: u128,
     period_den: u64,
 }
 
 impl ClockDomain {
     /// Creates a clock domain whose edge 0 is at `offset`.
     ///
-    /// Fails if the period is shorter than one tick at `clock`'s resolution, or cannot be
-    /// represented as a ratio of two `u64` values.
+    /// Fails with [`TimeError::FrequencyAboveResolution`] if adjacent edges cannot be
+    /// distinguished at `clock`'s resolution, i.e. the period is shorter than one tick.
     pub fn new(
         clock: &SimulationClock,
         id: ClockDomainId,
@@ -248,13 +254,14 @@ impl ClockDomain {
         offset: Tick,
         edge_rounding: Rounding,
     ) -> Result<ClockDomain, TimeError> {
-        // period = ticks_per_second / (num / den) = ticks_per_second × den / num
+        // period = ticks_per_second / (num / den) = ticks_per_second × den / num.
+        // A product of two u64 values always fits in u128.
         let num = u128::from(clock.ticks_per_second()) * u128::from(frequency.den());
         let den = u128::from(frequency.num());
         let g = gcd(num, den);
-        let period_num = u64::try_from(num / g).map_err(|_| TimeError::UnrepresentablePeriod)?;
-        let period_den = u64::try_from(den / g).map_err(|_| TimeError::UnrepresentablePeriod)?;
-        if period_num < period_den {
+        let period_num = num / g;
+        let period_den = u64::try_from(den / g).expect("num / g <= num fits in u64");
+        if period_num < u128::from(period_den) {
             return Err(TimeError::FrequencyAboveResolution);
         }
         Ok(ClockDomain {
@@ -289,18 +296,20 @@ impl ClockDomain {
 
     /// Returns the tick of edge `n`.
     pub fn edge(&self, n: u64) -> Result<Tick, TimeError> {
-        let p = u128::from(self.period_num);
         let q = u128::from(self.period_den);
+        let (p_whole, p_rem) = (self.period_num / q, self.period_num % q);
         let n = u128::from(n);
-        // n × p / q = (n / q) × p + (n % q) × p / q; only the second term needs rounding.
-        let whole = (n / q).checked_mul(p).ok_or(TimeError::TimeOverflow)?;
-        let rem = (n % q) * p;
-        let frac = match self.edge_rounding {
-            Rounding::Floor => rem / q,
-            Rounding::Ceil => rem.div_ceil(q),
-        };
+        // n × p / q = n × (p / q) + n × (p % q) / q; only the second term needs rounding.
+        // n × (p % q) < 2^64 × 2^64 fits; n × (p / q) may overflow, and then so does the
+        // result.
+        let whole = n.checked_mul(p_whole);
+        let frac = n.checked_mul(p_rem).map(|x| match self.edge_rounding {
+            Rounding::Floor => x / q,
+            Rounding::Ceil => x.div_ceil(q),
+        });
         let tick = whole
-            .checked_add(frac)
+            .zip(frac)
+            .and_then(|(w, f)| w.checked_add(f))
             .and_then(|t| t.checked_add(u128::from(self.offset.0)))
             .ok_or(TimeError::TimeOverflow)?;
         u64::try_from(tick)
@@ -314,15 +323,17 @@ impl ClockDomain {
             Some(d) if d > 0 => u128::from(d),
             _ => return Ok(0),
         };
-        let p = u128::from(self.period_num);
+        let p = self.period_num;
         let q = u128::from(self.period_den);
+        // d × q < 2^64 × 2^64 fits; since p >= q, the result is at most d + 1.
         let n = match self.edge_rounding {
             // floor(n·p/q) >= d  ⇔  n >= d·q/p
-            Rounding::Floor => (d * q).div_ceil(p),
+            Rounding::Floor => d.checked_mul(q).map(|x| x.div_ceil(p)),
             // ceil(n·p/q) >= d  ⇔  n·p/q > d − 1  ⇔  n > (d − 1)·q/p
-            Rounding::Ceil => (d - 1) * q / p + 1,
+            Rounding::Ceil => (d - 1).checked_mul(q).and_then(|x| (x / p).checked_add(1)),
         };
-        u64::try_from(n).map_err(|_| TimeError::TimeOverflow)
+        n.and_then(|n| u64::try_from(n).ok())
+            .ok_or(TimeError::TimeOverflow)
     }
 
     /// Returns the tick `k` cycles after the first edge at or after `now`.
@@ -432,6 +443,65 @@ mod tests {
         assert_eq!(d.edge(u64::MAX), Err(TimeError::TimeOverflow));
         assert_eq!(
             d.cycles_after(Tick(u64::MAX - 10), 1),
+            Err(TimeError::TimeOverflow)
+        );
+    }
+
+    #[test]
+    fn period_numerator_wider_than_u64_is_accepted() {
+        // ~8.6 GHz at 1 ps: period ≈ 116 ticks, but period_num = 10^12 × 2^30 > u64::MAX.
+        let num = (1u64 << 63) - 25;
+        let freq = Frequency::new(num, 1 << 30).unwrap();
+        let d = ClockDomain::new(&PS, ClockDomainId(0), freq, Tick::ZERO, Rounding::Floor).unwrap();
+        let p = 1_000_000_000_000u128 << 30;
+        assert!(p > u128::from(u64::MAX));
+        for n in [1u64, 2, 3, 1_000, 1_000_000] {
+            let expected = u64::try_from(u128::from(n) * p / u128::from(num)).unwrap();
+            assert_eq!(d.edge(n).unwrap(), Tick(expected));
+        }
+    }
+
+    #[test]
+    fn edge_reaches_exactly_u64_max() {
+        // Period of exactly one tick: edge(n) = offset + n.
+        let d = domain(1_000_000_000_000, 1, 0, Rounding::Floor);
+        assert_eq!(d.edge(u64::MAX), Ok(Tick(u64::MAX)));
+        assert_eq!(d.next_edge_index(Tick(u64::MAX)), Ok(u64::MAX));
+
+        let shifted = domain(1_000_000_000_000, 1, 1, Rounding::Ceil);
+        assert_eq!(shifted.edge(u64::MAX - 1), Ok(Tick(u64::MAX)));
+        assert_eq!(shifted.edge(u64::MAX), Err(TimeError::TimeOverflow));
+        assert_eq!(
+            shifted.cycles_after(Tick(u64::MAX), 1),
+            Err(TimeError::TimeOverflow)
+        );
+    }
+
+    #[test]
+    fn extreme_parameters_do_not_panic() {
+        let max = SimulationClock::new(u64::MAX).unwrap();
+        for (num, den) in [(1, u64::MAX), (u64::MAX, u64::MAX), (u64::MAX, 1), (1, 1)] {
+            let freq = Frequency::new(num, den).unwrap();
+            for rounding in [Rounding::Floor, Rounding::Ceil] {
+                let d = ClockDomain::new(&max, ClockDomainId(0), freq, Tick(u64::MAX), rounding)
+                    .unwrap();
+                assert_eq!(d.edge(0), Ok(Tick(u64::MAX)));
+                let _ = d.edge(u64::MAX);
+                let _ = d.next_edge_index(Tick(u64::MAX));
+                let _ = d.cycles_after(Tick(u64::MAX), u64::MAX);
+            }
+        }
+        let _ = max.ticks_for(Duration::from_fs(u128::MAX));
+    }
+
+    #[test]
+    fn duration_reaches_exactly_u64_max() {
+        // 1 tick = 1 fs, so ticks equal femtoseconds.
+        let fs = SimulationClock::new(1_000_000_000_000_000).unwrap();
+        let max = u128::from(u64::MAX);
+        assert_eq!(fs.ticks_for(Duration::from_fs(max)), Ok(u64::MAX));
+        assert_eq!(
+            fs.ticks_for(Duration::from_fs(max + 1)),
             Err(TimeError::TimeOverflow)
         );
     }
