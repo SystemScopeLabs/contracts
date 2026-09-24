@@ -8,7 +8,8 @@ crate; nothing here depends on a particular simulation backend.
 
 - time: ticks, clock domains, durations, frequencies
 - events: phases, event keys, scheduling
-- components and ports, with the closed protocol message set (`mem.v0`)
+- components and ports, with the closed protocol message set (`mem.v0`, `mem.v1`, `irq.v0`,
+  `block.v0`)
 - snapshots and the canonical encoding used for digests
 - trace records and the trace stream format
 - read-only observation (`WorldView`, `Observer`)

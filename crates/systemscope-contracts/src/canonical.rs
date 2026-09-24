@@ -9,6 +9,8 @@ use core::fmt;
 use crate::component::{ComponentId, Delivered, PortId};
 use crate::event::{EventKey, Phase};
 use crate::protocol::Message;
+use crate::protocol::block_v0::{self, BlockMsg, BlockReadOutcome, BlockWriteOutcome, MediaError};
+use crate::protocol::irq_v0::{self, IrqMsg};
 use crate::protocol::mem::{self, MemMsg, TxnId};
 use crate::protocol::mem_v1::{self, MemFault, ReadOutcome, WriteOutcome};
 use crate::time::Tick;
@@ -446,6 +448,154 @@ impl MemFault {
     }
 }
 
+impl IrqMsg {
+    /// Writes the variant tag in declaration order, then the fields.
+    pub fn encode(&self, e: &mut Encoder) {
+        match self {
+            IrqMsg::Level { asserted } => {
+                e.u8(0);
+                e.bool(*asserted);
+            }
+        }
+    }
+
+    /// Reads what [`IrqMsg::encode`] writes.
+    pub fn decode(d: &mut Decoder<'_>) -> Result<IrqMsg, DecodeError> {
+        match d.u8()? {
+            0 => Ok(IrqMsg::Level {
+                asserted: d.bool()?,
+            }),
+            tag => Err(DecodeError::InvalidTag {
+                what: "irq.v0",
+                tag,
+            }),
+        }
+    }
+}
+
+impl BlockMsg {
+    /// Writes the variant tag in declaration order, then the fields; nested outcomes and
+    /// errors are enums under the same rule.
+    pub fn encode(&self, e: &mut Encoder) {
+        match self {
+            BlockMsg::ReadBlock { txn, lba } => {
+                e.u8(0);
+                e.u64(txn.0);
+                e.u64(*lba);
+            }
+            BlockMsg::WriteBlock { txn, lba, data } => {
+                e.u8(1);
+                e.u64(txn.0);
+                e.u64(*lba);
+                e.bytes(data);
+            }
+            BlockMsg::ReadResult { txn, outcome } => {
+                e.u8(2);
+                e.u64(txn.0);
+                match outcome {
+                    BlockReadOutcome::Data { data } => {
+                        e.u8(0);
+                        e.bytes(data);
+                    }
+                    BlockReadOutcome::Error { error } => {
+                        e.u8(1);
+                        error.encode(e);
+                    }
+                }
+            }
+            BlockMsg::WriteResult { txn, outcome } => {
+                e.u8(3);
+                e.u64(txn.0);
+                match outcome {
+                    BlockWriteOutcome::Done => e.u8(0),
+                    BlockWriteOutcome::Error { error } => {
+                        e.u8(1);
+                        error.encode(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads what [`BlockMsg::encode`] writes. It checks the bytes only: `data` of any
+    /// length decodes, and the receiver checks that it is [`block_v0::BLOCK_SIZE`] bytes
+    /// (see [`block_v0`]).
+    pub fn decode(d: &mut Decoder<'_>) -> Result<BlockMsg, DecodeError> {
+        let msg = match d.u8()? {
+            0 => BlockMsg::ReadBlock {
+                txn: TxnId(d.u64()?),
+                lba: d.u64()?,
+            },
+            1 => BlockMsg::WriteBlock {
+                txn: TxnId(d.u64()?),
+                lba: d.u64()?,
+                data: d.bytes()?.to_vec(),
+            },
+            2 => BlockMsg::ReadResult {
+                txn: TxnId(d.u64()?),
+                outcome: match d.u8()? {
+                    0 => BlockReadOutcome::Data {
+                        data: d.bytes()?.to_vec(),
+                    },
+                    1 => BlockReadOutcome::Error {
+                        error: MediaError::decode(d)?,
+                    },
+                    tag => {
+                        return Err(DecodeError::InvalidTag {
+                            what: "block.v0 read outcome",
+                            tag,
+                        });
+                    }
+                },
+            },
+            3 => BlockMsg::WriteResult {
+                txn: TxnId(d.u64()?),
+                outcome: match d.u8()? {
+                    0 => BlockWriteOutcome::Done,
+                    1 => BlockWriteOutcome::Error {
+                        error: MediaError::decode(d)?,
+                    },
+                    tag => {
+                        return Err(DecodeError::InvalidTag {
+                            what: "block.v0 write outcome",
+                            tag,
+                        });
+                    }
+                },
+            },
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "block.v0",
+                    tag,
+                });
+            }
+        };
+        Ok(msg)
+    }
+}
+
+impl MediaError {
+    /// Writes the variant tag in declaration order.
+    pub fn encode(&self, e: &mut Encoder) {
+        match self {
+            MediaError::OutOfRange => e.u8(0),
+            MediaError::BadBlock => e.u8(1),
+        }
+    }
+
+    /// Reads what [`MediaError::encode`] writes.
+    pub fn decode(d: &mut Decoder<'_>) -> Result<MediaError, DecodeError> {
+        match d.u8()? {
+            0 => Ok(MediaError::OutOfRange),
+            1 => Ok(MediaError::BadBlock),
+            tag => Err(DecodeError::InvalidTag {
+                what: "block.v0 media error",
+                tag,
+            }),
+        }
+    }
+}
+
 impl Message {
     /// Writes `protocol name · protocol version u16 · payload`.
     pub fn encode(&self, e: &mut Encoder) {
@@ -455,6 +605,8 @@ impl Message {
         match self {
             Message::Mem(msg) => msg.encode(e),
             Message::MemV1(msg) => msg.encode(e),
+            Message::Irq(msg) => msg.encode(e),
+            Message::Block(msg) => msg.encode(e),
         }
     }
 
@@ -468,6 +620,12 @@ impl Message {
             }
             (n, v) if n == mem_v1::PROTOCOL.name && v == mem_v1::PROTOCOL.version => {
                 mem_v1::MemMsg::decode(d).map(Message::MemV1)
+            }
+            (n, v) if n == irq_v0::PROTOCOL.name && v == irq_v0::PROTOCOL.version => {
+                IrqMsg::decode(d).map(Message::Irq)
+            }
+            (n, v) if n == block_v0::PROTOCOL.name && v == block_v0::PROTOCOL.version => {
+                BlockMsg::decode(d).map(Message::Block)
             }
             _ => Err(DecodeError::UnknownProtocol),
         }

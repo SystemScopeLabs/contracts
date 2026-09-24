@@ -3,6 +3,8 @@
 //! The set of messages is closed: every protocol is a variant of [`Message`], so the
 //! runtime can check and canonically encode any message without dynamic typing.
 
+pub mod block_v0;
+pub mod irq_v0;
 pub mod mem;
 pub mod mem_v1;
 
@@ -22,6 +24,10 @@ pub enum Message {
     Mem(mem::MemMsg),
     /// A `mem.v1` message.
     MemV1(mem_v1::MemMsg),
+    /// An `irq.v0` message.
+    Irq(irq_v0::IrqMsg),
+    /// A `block.v0` message.
+    Block(block_v0::BlockMsg),
 }
 
 impl Message {
@@ -30,6 +36,8 @@ impl Message {
         match self {
             Message::Mem(_) => mem::PROTOCOL,
             Message::MemV1(_) => mem_v1::PROTOCOL,
+            Message::Irq(_) => irq_v0::PROTOCOL,
+            Message::Block(_) => block_v0::PROTOCOL,
         }
     }
 }
@@ -43,5 +51,17 @@ impl From<mem::MemMsg> for Message {
 impl From<mem_v1::MemMsg> for Message {
     fn from(msg: mem_v1::MemMsg) -> Message {
         Message::MemV1(msg)
+    }
+}
+
+impl From<irq_v0::IrqMsg> for Message {
+    fn from(msg: irq_v0::IrqMsg) -> Message {
+        Message::Irq(msg)
+    }
+}
+
+impl From<block_v0::BlockMsg> for Message {
+    fn from(msg: block_v0::BlockMsg) -> Message {
+        Message::Block(msg)
     }
 }
